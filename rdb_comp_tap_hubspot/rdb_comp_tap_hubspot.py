@@ -94,8 +94,8 @@ ENDPOINTS = {
     "owners":               "/owners/v2/owners",
 }
 
-def make_postgres_comp_if_needed(stream, STATE, ctx, postgres_compatible = False):
-    if postgres_compatible:
+def make_rdb_compatible(stream, STATE, ctx, rdb_compatible = False):
+    if rdb_compatible:
         STATE = stream.sync(STATE, ctx, True) # pylint: disable=not-callable
     else:
         STATE = stream.sync(STATE, ctx, False) 
@@ -110,7 +110,7 @@ def parse_args(required_config_keys):
     -d,--discover   Run in discover mode
     -p,--properties Properties file: DEPRECATED, please use --catalog instead
     --catalog       Catalog file
-    --postgres_compatible The generated schema is compatible with a Postgres database
+    --rdb_compatible The generated schema is compatible with a relational database
     Returns the parsed args object from argparse. For each argument that
     point to JSON files (config, state, properties), we will automatically
     load and parse the JSON file.
@@ -140,9 +140,9 @@ def parse_args(required_config_keys):
         help='Do schema discovery')
 
     parser.add_argument(
-       '--postgres_compatible',
+       '--rdb_compatible',
        action='store_true',
-       help='Tap-huspot is compatible with a Postgres target.')
+       help='Tap-huspot is compatible with a target that imports records into a relational database.')
 
     args = parser.parse_args()
     if args.config:
@@ -210,7 +210,7 @@ def get_url(endpoint, **kwargs):
     return BASE_URL + ENDPOINTS[endpoint].format(**kwargs)
 
 
-def get_field_type_schema(field_type, postgres_compatible = False):
+def get_field_type_schema(field_type, rdb_compatible = False):
     if field_type == "bool":
         return {"type": ["null", "boolean"]}
 
@@ -221,64 +221,64 @@ def get_field_type_schema(field_type, postgres_compatible = False):
     elif field_type == "number":
         # A value like 'N/A' can be returned for this type,
         # so we have to let this be a string sometimes
-        if postgres_compatible:
+        if rdb_compatible:
             return {"type": ["null", "number"]}
         else:
             return {"type": ["null", "number", "string"]}
     else:
         return {"type": ["null", "string"]}
 
-def get_field_schema(field_type, postgres_compatible, extras=False):
+def get_field_schema(field_type, rdb_compatible, extras=False):
     if extras:
         return {
             "type": "object",
             "properties": {
-                "value": get_field_type_schema(field_type, postgres_compatible),
-                "timestamp": get_field_type_schema("datetime", postgres_compatible),
-                "source": get_field_type_schema("string", postgres_compatible),
-                "sourceId": get_field_type_schema("string", postgres_compatible),
+                "value": get_field_type_schema(field_type, rdb_compatible),
+                "timestamp": get_field_type_schema("datetime", rdb_compatible),
+                "source": get_field_type_schema("string", rdb_compatible),
+                "sourceId": get_field_type_schema("string", rdb_compatible),
             }
         }
     else:
         return {
             "type": "object",
             "properties": {
-                "value": get_field_type_schema(field_type, postgres_compatible),
+                "value": get_field_type_schema(field_type, rdb_compatible),
             }
         }
 
-def parse_custom_schema(entity_name, data, postgres_compatible = False):
+def parse_custom_schema(entity_name, data, rdb_compatible = False):
     return {
         field['name']: get_field_schema(
-            field['type'], postgres_compatible, entity_name != "contacts")
+            field['type'], rdb_compatible, entity_name != "contacts")
         for field in data
     }
 
 
-def get_custom_schema(entity_name, postgres_compatible = False):
-    return parse_custom_schema(entity_name, request(get_url(entity_name + "_properties")).json(), postgres_compatible)
+def get_custom_schema(entity_name, rdb_compatible = False):
+    return parse_custom_schema(entity_name, request(get_url(entity_name + "_properties")).json(), rdb_compatible)
 
 def get_abs_path(path):
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), path)
 
-def load_associated_company_schema(postgres_compatible = False):
-    associated_company_schema = load_schema("companies", postgres_compatible)
+def load_associated_company_schema(rdb_compatible = False):
+    associated_company_schema = load_schema("companies", rdb_compatible)
     #pylint: disable=line-too-long
     associated_company_schema['properties']['company-id'] = associated_company_schema['properties'].pop('companyId')
     associated_company_schema['properties']['portal-id'] = associated_company_schema['properties'].pop('portalId')
     return associated_company_schema
 
-def load_schema(entity_name, postgres_compatible = False):
+def load_schema(entity_name, rdb_compatible = False):
     schema = utils.load_json(get_abs_path('schemas/{}.json'.format(entity_name)))
     if entity_name in ["contacts", "companies", "deals"]:
-        custom_schema = get_custom_schema(entity_name, postgres_compatible)
+        custom_schema = get_custom_schema(entity_name, rdb_compatible)
         schema['properties']['properties'] = {
             "type": "object",
             "properties": custom_schema,
         }
 
     if entity_name == "contacts":
-        schema['properties']['associated-company'] = load_associated_company_schema(postgres_compatible)
+        schema['properties']['associated-company'] = load_associated_company_schema(rdb_compatible)
 
     return schema
 
@@ -401,7 +401,7 @@ def gen_request(STATE, tap_stream_id, url, params, path, more_key, offset_keys, 
     singer.write_state(STATE)
 
 
-def _sync_contact_vids(catalog, vids, schema, bumble_bee, postgres_compatible = False):
+def _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible = False):
     if len(vids) == 0:
         return
 
@@ -410,7 +410,7 @@ def _sync_contact_vids(catalog, vids, schema, bumble_bee, postgres_compatible = 
     mdata = metadata.to_map(catalog.get('metadata'))
 
     for record in data.values():
-        if postgres_compatible:
+        if rdb_compatible:
             record = replace_na_with_none(record)
         record = bumble_bee.transform(record, schema, mdata)
         singer.write_record("contacts", record, catalog.get('stream_alias'), time_extracted=time_extracted)
@@ -422,14 +422,14 @@ default_contact_params = {
 }
 
 
-def sync_contacts(STATE, ctx, postgres_compatible = False):
+def sync_contacts(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     bookmark_key = 'versionTimestamp'
     start = utils.strptime_with_tz(get_start(STATE, "contacts", bookmark_key))
     LOGGER.info("sync_contacts from %s", start)
 
     max_bk_value = start
-    schema = load_schema("contacts", postgres_compatible)
+    schema = load_schema("contacts", rdb_compatible)
 
     singer.write_schema("contacts", schema, ["vid"], [bookmark_key], catalog.get('stream_alias'))
 
@@ -452,10 +452,10 @@ def sync_contacts(STATE, ctx, postgres_compatible = False):
                 max_bk_value = modified_time
 
             if len(vids) == 100:
-                _sync_contact_vids(catalog, vids, schema, bumble_bee, postgres_compatible)
+                _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible)
                 vids = []
 
-        _sync_contact_vids(catalog, vids, schema, bumble_bee, postgres_compatible)
+        _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible)
 
     STATE = singer.write_bookmark(STATE, 'contacts', bookmark_key, utils.strftime(max_bk_value))
     singer.write_state(STATE)
@@ -472,8 +472,8 @@ def use_recent_companies_endpoint(response):
 default_contacts_by_company_params = {'count' : 100}
 
 # NB> to do: support stream aliasing and field selection
-def _sync_contacts_by_company(STATE, company_id, postgres_compatible = False):
-    schema = load_schema(CONTACTS_BY_COMPANY, postgres_compatible)
+def _sync_contacts_by_company(STATE, company_id, rdb_compatible = False):
+    schema = load_schema(CONTACTS_BY_COMPANY, rdb_compatible)
 
     url = get_url("contacts_by_company", company_id=company_id)
     path = 'vids'
@@ -484,7 +484,7 @@ def _sync_contacts_by_company(STATE, company_id, postgres_compatible = False):
                 counter.increment()
                 record = {'company-id' : company_id,
                           'contact-id' : row}
-                if postgres_compatible:
+                if rdb_compatible:
                     record = replace_na_with_none(record)
                 record = bumble_bee.transform(record, schema)
                 singer.write_record("contacts_by_company", record, time_extracted=utils.now())
@@ -495,20 +495,20 @@ default_company_params = {
     'limit': 250, 'properties': ["createdate", "hs_lastmodifieddate"]
 }
 
-def sync_companies(STATE, ctx, postgres_compatible = False):
+def sync_companies(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     bumble_bee = Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING)
     bookmark_key = 'hs_lastmodifieddate'
     start = utils.strptime_with_tz(get_start(STATE, "companies", bookmark_key))
     LOGGER.info("sync_companies from %s", start)
-    schema = load_schema('companies', postgres_compatible)
+    schema = load_schema('companies', rdb_compatible)
     singer.write_schema("companies", schema, ["companyId"], [bookmark_key], catalog.get('stream_alias'))
 
     url = get_url("companies_all")
     max_bk_value = start
     if CONTACTS_BY_COMPANY in ctx.selected_stream_ids:
-        contacts_by_company_schema = load_schema(CONTACTS_BY_COMPANY, postgres_compatible)
+        contacts_by_company_schema = load_schema(CONTACTS_BY_COMPANY, rdb_compatible)
         singer.write_schema("contacts_by_company", contacts_by_company_schema, ["company-id", "contact-id"])
 
     with bumble_bee:
@@ -529,7 +529,7 @@ def sync_companies(STATE, ctx, postgres_compatible = False):
 
             if not modified_time or modified_time >= start:
                 record = request(get_url("companies_detail", company_id=row['companyId'])).json()
-                if postgres_compatible:
+                if rdb_compatible:
                     record = replace_na_with_none(record)
                 record = bumble_bee.transform(record, schema, mdata)
                 singer.write_record("companies", record, catalog.get('stream_alias'), time_extracted=utils.now())
@@ -540,7 +540,7 @@ def sync_companies(STATE, ctx, postgres_compatible = False):
     singer.write_state(STATE)
     return STATE
 
-def sync_deals(STATE, ctx, postgres_compatible = False):
+def sync_deals(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     bookmark_key = 'hs_lastmodifieddate'
@@ -552,7 +552,7 @@ def sync_deals(STATE, ctx, postgres_compatible = False):
               'includeAssociations': False,
               'properties' : []}
 
-    schema = load_schema("deals", postgres_compatible)
+    schema = load_schema("deals", rdb_compatible)
     singer.write_schema("deals", schema, ["dealId"], [bookmark_key], catalog.get('stream_alias'))
 
     # Check if we should  include associations
@@ -584,7 +584,7 @@ def sync_deals(STATE, ctx, postgres_compatible = False):
                 max_bk_value = modified_time
 
             if not modified_time or modified_time >= start:
-                if postgres_compatible:
+                if rdb_compatible:
                     row = replace_na_with_none(row)
                 record = bumble_bee.transform(row, schema, mdata)
                 singer.write_record("deals", record, catalog.get('stream_alias'), time_extracted=utils.now())
@@ -594,10 +594,10 @@ def sync_deals(STATE, ctx, postgres_compatible = False):
     return STATE
 
 #NB> no suitable bookmark is available: https://developers.hubspot.com/docs/methods/email/get_campaigns_by_id
-def sync_campaigns(STATE, ctx, postgres_compatible = False):
+def sync_campaigns(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema("campaigns", postgres_compatible)
+    schema = load_schema("campaigns", rdb_compatible)
     singer.write_schema("campaigns", schema, ["id"], catalog.get('stream_alias'))
     LOGGER.info("sync_campaigns(NO bookmarks)")
     url = get_url("campaigns_all")
@@ -606,7 +606,7 @@ def sync_campaigns(STATE, ctx, postgres_compatible = False):
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in gen_request(STATE, 'campaigns', url, params, "campaigns", "hasMore", ["offset"], ["offset"]):
             record = request(get_url("campaigns_detail", campaign_id=row['id'])).json()
-            if postgres_compatible:
+            if rdb_compatible:
                 record = replace_na_with_none(record)
             record = bumble_bee.transform(record, schema, mdata)
             singer.write_record("campaigns", record, catalog.get('stream_alias'), time_extracted=utils.now())
@@ -614,8 +614,8 @@ def sync_campaigns(STATE, ctx, postgres_compatible = False):
     return STATE
 
 
-def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, postgres_compatible = False):
-    schema = load_schema(entity_name, postgres_compatible)
+def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, rdb_compatible = False):
+    schema = load_schema(entity_name, rdb_compatible)
     bookmark_key = 'startTimestamp'
 
     singer.write_schema(entity_name, schema, key_properties, [bookmark_key], catalog.get('stream_alias'))
@@ -648,7 +648,7 @@ def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, postg
                     time_extracted = utils.now()
                     for row in data[path]:
                         counter.increment()
-                        if postgres_compatible:
+                        if rdb_compatible:
                             row = replace_na_with_none(row)
                         record = bumble_bee.transform(row, schema, mdata)
                         singer.write_record(entity_name,
@@ -670,21 +670,21 @@ def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, postg
     singer.write_state(STATE)
     return STATE
 
-def sync_subscription_changes(STATE, ctx, postgres_compatible = False):
+def sync_subscription_changes(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     STATE = sync_entity_chunked(STATE, catalog, "subscription_changes", ["timestamp", "portalId", "recipient"],
-                                "timeline", postgres_compatible)
+                                "timeline", rdb_compatible)
     return STATE
 
-def sync_email_events(STATE, ctx, postgres_compatible = False):
+def sync_email_events(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
-    STATE = sync_entity_chunked(STATE, catalog, "email_events", ["id"], "events", postgres_compatible)
+    STATE = sync_entity_chunked(STATE, catalog, "email_events", ["id"], "events", rdb_compatible)
     return STATE
 
-def sync_contact_lists(STATE, ctx, postgres_compatible = False):
+def sync_contact_lists(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema("contact_lists", postgres_compatible)
+    schema = load_schema("contact_lists", rdb_compatible)
     bookmark_key = 'updatedAt'
     singer.write_schema("contact_lists", schema, ["listId"], [bookmark_key], catalog.get('stream_alias'))
 
@@ -697,7 +697,7 @@ def sync_contact_lists(STATE, ctx, postgres_compatible = False):
     params = {'count': 250}
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in gen_request(STATE, 'contact_lists', url, params, "lists", "has-more", ["offset"], ["offset"]):
-            if postgres_compatible:
+            if rdb_compatible:
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= start:
@@ -710,10 +710,10 @@ def sync_contact_lists(STATE, ctx, postgres_compatible = False):
 
     return STATE
 
-def sync_forms(STATE, ctx, postgres_compatible = False):
+def sync_forms(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema("forms", postgres_compatible)
+    schema = load_schema("forms", rdb_compatible)
     bookmark_key = 'updatedAt'
 
     singer.write_schema("forms", schema, ["guid"], [bookmark_key], catalog.get('stream_alias'))
@@ -727,7 +727,7 @@ def sync_forms(STATE, ctx, postgres_compatible = False):
 
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data:
-            if postgres_compatible:
+            if rdb_compatible:
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
 
@@ -741,10 +741,10 @@ def sync_forms(STATE, ctx, postgres_compatible = False):
 
     return STATE
 
-def sync_workflows(STATE, ctx, postgres_compatible = False):
+def sync_workflows(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema("workflows", postgres_compatible)
+    schema = load_schema("workflows", rdb_compatible)
     bookmark_key = 'updatedAt'
     singer.write_schema("workflows", schema, ["id"], [bookmark_key], catalog.get('stream_alias'))
     start = get_start(STATE, "workflows", bookmark_key)
@@ -760,7 +760,7 @@ def sync_workflows(STATE, ctx, postgres_compatible = False):
 
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data['workflows']:
-            if postgres_compatible:
+            if rdb_compatible:
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= start:
@@ -772,10 +772,10 @@ def sync_workflows(STATE, ctx, postgres_compatible = False):
     singer.write_state(STATE)
     return STATE
 
-def sync_owners(STATE, ctx, postgres_compatible = False):
+def sync_owners(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema("owners", postgres_compatible)
+    schema = load_schema("owners", rdb_compatible)
     bookmark_key = 'updatedAt'
 
     singer.write_schema("owners", schema, ["ownerId"], [bookmark_key], catalog.get('stream_alias'))
@@ -788,7 +788,7 @@ def sync_owners(STATE, ctx, postgres_compatible = False):
 
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data:
-            if postgres_compatible:
+            if rdb_compatible:
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= max_bk_value:
@@ -801,10 +801,10 @@ def sync_owners(STATE, ctx, postgres_compatible = False):
     singer.write_state(STATE)
     return STATE
 
-def sync_engagements(STATE, ctx, postgres_compatible = False):
+def sync_engagements(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema("engagements", postgres_compatible)
+    schema = load_schema("engagements", rdb_compatible)
     bookmark_key = 'lastUpdated'
     singer.write_schema("engagements", schema, ["engagement_id"], [bookmark_key], catalog.get('stream_alias'))
     start = get_start(STATE, "engagements", bookmark_key)
@@ -823,7 +823,7 @@ def sync_engagements(STATE, ctx, postgres_compatible = False):
 
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for engagement in engagements:
-            if postgres_compatible:
+            if rdb_compatible:
                 engagement = replace_na_with_none(engagement)
             record = bumble_bee.transform(engagement, schema, mdata)
             if record['engagement'][bookmark_key] >= start:
@@ -838,16 +838,16 @@ def sync_engagements(STATE, ctx, postgres_compatible = False):
     singer.write_state(STATE)
     return STATE
 
-def sync_deal_pipelines(STATE, ctx, postgres_compatible = False):
+def sync_deal_pipelines(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
-    schema = load_schema('deal_pipelines', postgres_compatible)
+    schema = load_schema('deal_pipelines', rdb_compatible)
     singer.write_schema('deal_pipelines', schema, ['pipelineId'], catalog.get('stream_alias'))
     LOGGER.info('sync_deal_pipelines')
     data = request(get_url('deal_pipelines')).json()
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data:
-            if postgres_compatible:
+            if rdb_compatible:
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
             singer.write_record("deal_pipelines", record, catalog.get('stream_alias'), time_extracted=utils.now())
@@ -903,7 +903,7 @@ def get_selected_streams(remaining_streams, annotated_schema):
     return selected_streams
 
 
-def do_sync(STATE, catalogs, postgres_compatible = False):
+def do_sync(STATE, catalogs, rdb_compatible = False):
     ctx = Context(catalogs)
     validate_dependencies(ctx)
 
@@ -917,7 +917,7 @@ def do_sync(STATE, catalogs, postgres_compatible = False):
         singer.write_state(STATE)
 
         try:
-            STATE = make_postgres_comp_if_needed(stream, STATE, ctx, postgres_compatible)
+            STATE = make_rdb_compatible(stream, STATE, ctx, rdb_compatible)
             # stream.sync(STATE, ctx) # pylint: disable=not-callable
         except SourceUnavailableException as ex:
             error_message = str(ex).replace(CONFIG['access_token'], 10 * '*')
@@ -955,8 +955,8 @@ def validate_dependencies(ctx):
     if errs:
         raise DependencyException(" ".join(errs))
 
-def load_discovered_schema(stream, postgres_compatible = False):
-    schema = load_schema(stream.tap_stream_id, postgres_compatible)
+def load_discovered_schema(stream, rdb_compatible = False):
+    schema = load_schema(stream.tap_stream_id, rdb_compatible)
     mdata = metadata.new()
 
     mdata = metadata.write(mdata, (), 'table-key-properties', stream.key_properties)
@@ -977,11 +977,11 @@ def load_discovered_schema(stream, postgres_compatible = False):
 
     return schema, metadata.to_list(mdata)
 
-def discover_schemas(postgres_compatible = False):
+def discover_schemas(rdb_compatible = False):
     result = {'streams': []}
     for stream in STREAMS:
         LOGGER.info('Loading schema for %s', stream.tap_stream_id)
-        schema, mdata = load_discovered_schema(stream, postgres_compatible)
+        schema, mdata = load_discovered_schema(stream, rdb_compatible)
         result['streams'].append({'stream': stream.tap_stream_id,
                                   'tap_stream_id': stream.tap_stream_id,
                                   'schema': schema,
@@ -989,7 +989,7 @@ def discover_schemas(postgres_compatible = False):
     # Load the contacts_by_company schema
     LOGGER.info('Loading schema for contacts_by_company')
     contacts_by_company = Stream('contacts_by_company', _sync_contacts_by_company, ['company-id', 'contact-id'], None, 'FULL_TABLE')
-    schema, mdata = load_discovered_schema(contacts_by_company, postgres_compatible)
+    schema, mdata = load_discovered_schema(contacts_by_company, rdb_compatible)
 
     result['streams'].append({'stream': CONTACTS_BY_COMPANY,
                               'tap_stream_id': CONTACTS_BY_COMPANY,
@@ -998,9 +998,9 @@ def discover_schemas(postgres_compatible = False):
 
     return result
 
-def do_discover(postgres_compatible = False):
+def do_discover(rdb_compatible = False):
     LOGGER.info('Loading schemas')
-    json.dump(discover_schemas(postgres_compatible = postgres_compatible), sys.stdout, indent=4)
+    json.dump(discover_schemas(rdb_compatible = rdb_compatible), sys.stdout, indent=4)
 
 def main_impl():
     args = parse_args(
@@ -1017,12 +1017,12 @@ def main_impl():
         STATE.update(args.state)
 
     if args.discover:
-        if args.postgres_compatible:
+        if args.rdb_compatible:
             do_discover(True)
         else:
             do_discover()
     elif args.properties:
-        if args.postgres_compatible:
+        if args.rdb_compatible:
             do_sync(STATE, args.properties, True)
         else:
             do_sync(STATE, args.properties)
