@@ -413,14 +413,22 @@ def _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible = False
         if rdb_compatible:
             record = replace_na_with_none(record)
         record = bumble_bee.transform(record, schema, mdata)
-        singer.write_record("contacts", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+        # This was added in order to avoid closing the pipe
+        # when the reading process (the target the receives the output of this tap) terminates 
+        # and closes its end of the pipe while the writing process (the tap) still tries to write. 
+        # Because of this, calling sys.stdout.flush() in mesages.py (https://github.com/singer-io/singer-python/blob/master/singer/messages.py#L218)
+        # will raise a BrokenPipeError.
+       try
+            singer.write_record("contacts", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+        except (BrokenPipeError, IOError):
+            LOGGER.info("BrokenPipeError caught.")
+            pass
 
 default_contact_params = {
     'showListMemberships': True,
     'includeVersion': True,
     'count': 100,
 }
-
 
 def sync_contacts(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
@@ -487,8 +495,11 @@ def _sync_contacts_by_company(STATE, company_id, rdb_compatible = False):
                 if rdb_compatible:
                     record = replace_na_with_none(record)
                 record = bumble_bee.transform(record, schema)
-                singer.write_record("contacts_by_company", record, time_extracted=utils.now())
-
+                try:
+                    singer.write_record("contacts_by_company", record, time_extracted=utils.now())
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
     return STATE
 
 default_company_params = {
@@ -532,7 +543,11 @@ def sync_companies(STATE, ctx, rdb_compatible = False):
                 if rdb_compatible:
                     record = replace_na_with_none(record)
                 record = bumble_bee.transform(record, schema, mdata)
-                singer.write_record("companies", record, catalog.get('stream_alias'), time_extracted=utils.now())
+                try:
+                    singer.write_record("companies", record, catalog.get('stream_alias'), time_extracted=utils.now())
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
                 if CONTACTS_BY_COMPANY in ctx.selected_stream_ids:
                     STATE = _sync_contacts_by_company(STATE, record['companyId'])
 
@@ -587,8 +602,11 @@ def sync_deals(STATE, ctx, rdb_compatible = False):
                 if rdb_compatible:
                     row = replace_na_with_none(row)
                 record = bumble_bee.transform(row, schema, mdata)
-                singer.write_record("deals", record, catalog.get('stream_alias'), time_extracted=utils.now())
-
+                try:
+                    singer.write_record("deals", record, catalog.get('stream_alias'), time_extracted=utils.now())
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
     STATE = singer.write_bookmark(STATE, 'deals', bookmark_key, utils.strftime(max_bk_value))
     singer.write_state(STATE)
     return STATE
@@ -609,8 +627,11 @@ def sync_campaigns(STATE, ctx, rdb_compatible = False):
             if rdb_compatible:
                 record = replace_na_with_none(record)
             record = bumble_bee.transform(record, schema, mdata)
-            singer.write_record("campaigns", record, catalog.get('stream_alias'), time_extracted=utils.now())
-
+            try:
+                singer.write_record("campaigns", record, catalog.get('stream_alias'), time_extracted=utils.now())
+            except (BrokenPipeError, IOError):
+                LOGGER.info("BrokenPipeError caught.")
+                pass
     return STATE
 
 
@@ -651,10 +672,14 @@ def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, rdb_c
                         if rdb_compatible:
                             row = replace_na_with_none(row)
                         record = bumble_bee.transform(row, schema, mdata)
-                        singer.write_record(entity_name,
+                        try:
+                            singer.write_record(entity_name,
                                             record,
                                             catalog.get('stream_alias'),
                                             time_extracted=time_extracted)
+                        except (BrokenPipeError, IOError):
+                            LOGGER.info("BrokenPipeError caught.")
+                            pass
                     if data.get('hasMore'):
                         STATE = singer.set_offset(STATE, entity_name, 'offset', data['offset'])
                         singer.write_state(STATE)
@@ -701,7 +726,11 @@ def sync_contact_lists(STATE, ctx, rdb_compatible = False):
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= start:
-                singer.write_record("contact_lists", record, catalog.get('stream_alias'), time_extracted=utils.now())
+                try:
+                    singer.write_record("contact_lists", record, catalog.get('stream_alias'), time_extracted=utils.now())
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
@@ -732,7 +761,11 @@ def sync_forms(STATE, ctx, rdb_compatible = False):
             record = bumble_bee.transform(row, schema, mdata)
 
             if record[bookmark_key] >= start:
-                singer.write_record("forms", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                try:
+                    singer.write_record("forms", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
@@ -764,7 +797,11 @@ def sync_workflows(STATE, ctx, rdb_compatible = False):
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= start:
-                singer.write_record("workflows", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                try:
+                    singer.write_record("workflows", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
@@ -795,7 +832,11 @@ def sync_owners(STATE, ctx, rdb_compatible = False):
                 max_bk_value = record[bookmark_key]
 
             if record[bookmark_key] >= start:
-                singer.write_record("owners", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                try:
+                    singer.write_record("owners", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
 
     STATE = singer.write_bookmark(STATE, 'owners', bookmark_key, max_bk_value)
     singer.write_state(STATE)
@@ -830,7 +871,11 @@ def sync_engagements(STATE, ctx, rdb_compatible = False):
                 # hoist PK and bookmark field to top-level record
                 record['engagement_id'] = record['engagement']['id']
                 record[bookmark_key] = record['engagement'][bookmark_key]
-                singer.write_record("engagements", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                try:
+                    singer.write_record("engagements", record, catalog.get('stream_alias'), time_extracted=time_extracted)
+                except (BrokenPipeError, IOError):
+                    LOGGER.info("BrokenPipeError caught.")
+                    pass
                 if record['engagement'][bookmark_key] >= max_bk_value:
                     max_bk_value = record['engagement'][bookmark_key]
 
@@ -850,7 +895,11 @@ def sync_deal_pipelines(STATE, ctx, rdb_compatible = False):
             if rdb_compatible:
                 row = replace_na_with_none(row)
             record = bumble_bee.transform(row, schema, mdata)
-            singer.write_record("deal_pipelines", record, catalog.get('stream_alias'), time_extracted=utils.now())
+            try:
+                singer.write_record("deal_pipelines", record, catalog.get('stream_alias'), time_extracted=utils.now())
+            except (BrokenPipeError, IOError):
+                LOGGER.info("BrokenPipeError caught.")
+                pass
     singer.write_state(STATE)
     return STATE
 

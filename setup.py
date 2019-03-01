@@ -3,8 +3,8 @@
 from setuptools import setup
 
 setup(name='rdb-comp-tap-hubspot',
-      version='0.0.0',
-      description='Singer.io tap for extracting data from the HubSpot API that generates a schema that is Postgres compatible for each stream. ',
+      version='0.0.2',
+      description='Singer.io tap for extracting data from the HubSpot API that generates a schema that is compatible with a relational database target for each stream. ',
       author='Stitch',
       url='http://singer.io',
       classifiers=['Programming Language :: Python :: 3 :: Only'],
