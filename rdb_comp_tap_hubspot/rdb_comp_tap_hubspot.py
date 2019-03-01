@@ -418,7 +418,7 @@ def _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible = False
         # and closes its end of the pipe while the writing process (the tap) still tries to write. 
         # Because of this, calling sys.stdout.flush() in mesages.py (https://github.com/singer-io/singer-python/blob/master/singer/messages.py#L218)
         # will raise a BrokenPipeError.
-       try:
+        try:
             singer.write_record("contacts", record, catalog.get('stream_alias'), time_extracted=time_extracted)
         except (BrokenPipeError, IOError):
             LOGGER.info("BrokenPipeError caught.")
