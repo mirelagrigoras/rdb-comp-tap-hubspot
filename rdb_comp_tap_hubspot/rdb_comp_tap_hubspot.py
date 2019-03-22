@@ -170,7 +170,7 @@ def replace_na_with_none(obj):
                                 "subkey4" : "value2"
                         }
                     }
-        self.replace_na_with_none(object) will return:
+        replace_na_with_none(object) will return:
         {
             "key1" : [{"subkey1": "value1"}, {"subkey2": None}],
             "key2" : None,
@@ -196,6 +196,51 @@ def replace_na_with_none(obj):
         if obj.lower() == 'n/a':
             obj = None
     return obj
+
+def get_object_type(schema):
+    if isinstance(schema['type'], list):
+        type_obj = schema['type'][len(schema['type'])-1]
+    elif isinstance(schema['type'], str):
+        type_obj = schema['type']
+    return type_obj
+
+def merge_default_with_dict(dictionary, merged):
+    for key, item in dictionary.items():
+        if isinstance(item, dict):
+            merged.setdefault(key, {})
+            merge_default_with_dict(item, merged[key])
+        else:
+            merged.setdefault(key, [])
+            if isinstance(item, list) and len(item) > 0:
+                merged[key] = item
+            elif not isinstance(item, list):
+                merged[key] = item
+    return merged
+
+def get_empty_object_from_schema(schema):
+    object_type = get_object_type(schema)
+    if object_type == "object":
+        new_dict = {}
+        for key in schema['properties']:
+            new_dict[key] = get_empty_object_from_schema(schema['properties'][key])
+        return new_dict
+    elif object_type == "array":
+        return [get_empty_object_from_schema(schema['items'])]
+    else: 
+        return ""
+
+def process_record(record, empty_object, schema):
+    record = replace_na_with_none(record)
+    # The following list contains on the first position the  DEFAULT dictionary, which is obtained 
+    # out of the json schema and the secon one is the current row
+    # They  MUST be n this order or otherwise merging the dictionaries will not have the result we desire:
+    # to set default values for the missing keys in the current row, but which are present in the json schema
+    # and NOT to overwrite the keys that already have a value in the current row.        
+    dicts = [empty_object, record]
+    merged = {}
+    for dictionary in dicts:
+        record = merge_default_with_dict(dictionary, merged)
+    return record
 
 def get_start(state, tap_stream_id, bookmark_key):
     current_bookmark = singer.get_bookmark(state, tap_stream_id, bookmark_key)
@@ -400,8 +445,7 @@ def gen_request(STATE, tap_stream_id, url, params, path, more_key, offset_keys, 
     STATE = singer.clear_offset(STATE, tap_stream_id)
     singer.write_state(STATE)
 
-
-def _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible = False):
+def _sync_contact_vids(catalog, vids, schema, bumble_bee, empty_object, rdb_compatible = False):
     if len(vids) == 0:
         return
 
@@ -411,18 +455,9 @@ def _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible = False
 
     for record in data.values():
         if rdb_compatible:
-            record = replace_na_with_none(record)
+            record = process_record(record, empty_object, schema)
         record = bumble_bee.transform(record, schema, mdata)
-        # This was added in order to avoid closing the pipe
-        # when the reading process (the target the receives the output of this tap) terminates 
-        # and closes its end of the pipe while the writing process (the tap) still tries to write. 
-        # Because of this, calling sys.stdout.flush() in mesages.py (https://github.com/singer-io/singer-python/blob/master/singer/messages.py#L218)
-        # will raise a BrokenPipeError.
-        try:
-            singer.write_record("contacts", record, catalog.get('stream_alias'), time_extracted=time_extracted)
-        except (BrokenPipeError, IOError):
-            LOGGER.info("BrokenPipeError caught.")
-            pass
+        singer.write_record("contacts", record, catalog.get('stream_alias'), time_extracted=time_extracted)
 
 default_contact_params = {
     'showListMemberships': True,
@@ -438,7 +473,7 @@ def sync_contacts(STATE, ctx, rdb_compatible = False):
 
     max_bk_value = start
     schema = load_schema("contacts", rdb_compatible)
-
+    empty_object = get_empty_object_from_schema(schema)
     singer.write_schema("contacts", schema, ["vid"], [bookmark_key], catalog.get('stream_alias'))
 
     url = get_url("contacts_all")
@@ -460,10 +495,10 @@ def sync_contacts(STATE, ctx, rdb_compatible = False):
                 max_bk_value = modified_time
 
             if len(vids) == 100:
-                _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible)
+                _sync_contact_vids(catalog, vids, schema, bumble_bee, empty_object, rdb_compatible)
                 vids = []
 
-        _sync_contact_vids(catalog, vids, schema, bumble_bee, rdb_compatible)
+        _sync_contact_vids(catalog, vids, schema, bumble_bee, empty_object, rdb_compatible)
 
     STATE = singer.write_bookmark(STATE, 'contacts', bookmark_key, utils.strftime(max_bk_value))
     singer.write_state(STATE)
@@ -482,6 +517,7 @@ default_contacts_by_company_params = {'count' : 100}
 # NB> to do: support stream aliasing and field selection
 def _sync_contacts_by_company(STATE, company_id, rdb_compatible = False):
     schema = load_schema(CONTACTS_BY_COMPANY, rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
 
     url = get_url("contacts_by_company", company_id=company_id)
     path = 'vids'
@@ -493,13 +529,9 @@ def _sync_contacts_by_company(STATE, company_id, rdb_compatible = False):
                 record = {'company-id' : company_id,
                           'contact-id' : row}
                 if rdb_compatible:
-                    record = replace_na_with_none(record)
+                    record = process_record(record, empty_object, schema)
                 record = bumble_bee.transform(record, schema)
-                try:
-                    singer.write_record("contacts_by_company", record, time_extracted=utils.now())
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("contacts_by_company", record, time_extracted=utils.now())
     return STATE
 
 default_company_params = {
@@ -514,6 +546,7 @@ def sync_companies(STATE, ctx, rdb_compatible = False):
     start = utils.strptime_with_tz(get_start(STATE, "companies", bookmark_key))
     LOGGER.info("sync_companies from %s", start)
     schema = load_schema('companies', rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     singer.write_schema("companies", schema, ["companyId"], [bookmark_key], catalog.get('stream_alias'))
 
     url = get_url("companies_all")
@@ -541,13 +574,9 @@ def sync_companies(STATE, ctx, rdb_compatible = False):
             if not modified_time or modified_time >= start:
                 record = request(get_url("companies_detail", company_id=row['companyId'])).json()
                 if rdb_compatible:
-                    record = replace_na_with_none(record)
+                    record = process_record(record, empty_object, schema)
                 record = bumble_bee.transform(record, schema, mdata)
-                try:
-                    singer.write_record("companies", record, catalog.get('stream_alias'), time_extracted=utils.now())
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("companies", record, catalog.get('stream_alias'), time_extracted=utils.now())
                 if CONTACTS_BY_COMPANY in ctx.selected_stream_ids:
                     STATE = _sync_contacts_by_company(STATE, record['companyId'])
 
@@ -568,6 +597,7 @@ def sync_deals(STATE, ctx, rdb_compatible = False):
               'properties' : []}
 
     schema = load_schema("deals", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     singer.write_schema("deals", schema, ["dealId"], [bookmark_key], catalog.get('stream_alias'))
 
     # Check if we should  include associations
@@ -600,13 +630,9 @@ def sync_deals(STATE, ctx, rdb_compatible = False):
 
             if not modified_time or modified_time >= start:
                 if rdb_compatible:
-                    row = replace_na_with_none(row)
+                    row = process_record(row, empty_object, schema)
                 record = bumble_bee.transform(row, schema, mdata)
-                try:
-                    singer.write_record("deals", record, catalog.get('stream_alias'), time_extracted=utils.now())
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("deals", record, catalog.get('stream_alias'), time_extracted=utils.now())
     STATE = singer.write_bookmark(STATE, 'deals', bookmark_key, utils.strftime(max_bk_value))
     singer.write_state(STATE)
     return STATE
@@ -625,18 +651,15 @@ def sync_campaigns(STATE, ctx, rdb_compatible = False):
         for row in gen_request(STATE, 'campaigns', url, params, "campaigns", "hasMore", ["offset"], ["offset"]):
             record = request(get_url("campaigns_detail", campaign_id=row['id'])).json()
             if rdb_compatible:
-                record = replace_na_with_none(record)
+                record = process_record(record, empty_object, schema)
             record = bumble_bee.transform(record, schema, mdata)
-            try:
-                singer.write_record("campaigns", record, catalog.get('stream_alias'), time_extracted=utils.now())
-            except (BrokenPipeError, IOError):
-                LOGGER.info("BrokenPipeError caught.")
-                pass
+            singer.write_record("campaigns", record, catalog.get('stream_alias'), time_extracted=utils.now())
     return STATE
 
 
 def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, rdb_compatible = False):
     schema = load_schema(entity_name, rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     bookmark_key = 'startTimestamp'
 
     singer.write_schema(entity_name, schema, key_properties, [bookmark_key], catalog.get('stream_alias'))
@@ -670,16 +693,12 @@ def sync_entity_chunked(STATE, catalog, entity_name, key_properties, path, rdb_c
                     for row in data[path]:
                         counter.increment()
                         if rdb_compatible:
-                            row = replace_na_with_none(row)
+                            row = process_record(row, empty_object, schema)
                         record = bumble_bee.transform(row, schema, mdata)
-                        try:
-                            singer.write_record(entity_name,
+                        singer.write_record(entity_name,
                                             record,
                                             catalog.get('stream_alias'),
                                             time_extracted=time_extracted)
-                        except (BrokenPipeError, IOError):
-                            LOGGER.info("BrokenPipeError caught.")
-                            pass
                     if data.get('hasMore'):
                         STATE = singer.set_offset(STATE, entity_name, 'offset', data['offset'])
                         singer.write_state(STATE)
@@ -710,6 +729,7 @@ def sync_contact_lists(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema("contact_lists", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     bookmark_key = 'updatedAt'
     singer.write_schema("contact_lists", schema, ["listId"], [bookmark_key], catalog.get('stream_alias'))
 
@@ -723,26 +743,22 @@ def sync_contact_lists(STATE, ctx, rdb_compatible = False):
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in gen_request(STATE, 'contact_lists', url, params, "lists", "has-more", ["offset"], ["offset"]):
             if rdb_compatible:
-                row = replace_na_with_none(row)
+                row = process_record(row, empty_object, schema)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= start:
-                try:
-                    singer.write_record("contact_lists", record, catalog.get('stream_alias'), time_extracted=utils.now())
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("contact_lists", record, catalog.get('stream_alias'), time_extracted=utils.now())
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
     STATE = singer.write_bookmark(STATE, 'contact_lists', bookmark_key, max_bk_value)
     singer.write_state(STATE)
-
     return STATE
 
 def sync_forms(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema("forms", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     bookmark_key = 'updatedAt'
 
     singer.write_schema("forms", schema, ["guid"], [bookmark_key], catalog.get('stream_alias'))
@@ -757,27 +773,23 @@ def sync_forms(STATE, ctx, rdb_compatible = False):
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data:
             if rdb_compatible:
-                row = replace_na_with_none(row)
+                row = process_record(row, empty_object, schema)
             record = bumble_bee.transform(row, schema, mdata)
 
             if record[bookmark_key] >= start:
-                try:
-                    singer.write_record("forms", record, catalog.get('stream_alias'), time_extracted=time_extracted)
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("forms", record, catalog.get('stream_alias'), time_extracted=time_extracted)
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
     STATE = singer.write_bookmark(STATE, 'forms', bookmark_key, max_bk_value)
     singer.write_state(STATE)
-
     return STATE
 
 def sync_workflows(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema("workflows", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     bookmark_key = 'updatedAt'
     singer.write_schema("workflows", schema, ["id"], [bookmark_key], catalog.get('stream_alias'))
     start = get_start(STATE, "workflows", bookmark_key)
@@ -785,7 +797,6 @@ def sync_workflows(STATE, ctx, rdb_compatible = False):
 
     STATE = singer.write_bookmark(STATE, 'workflows', bookmark_key, max_bk_value)
     singer.write_state(STATE)
-
     LOGGER.info("sync_workflows from %s", start)
 
     data = request(get_url("workflows")).json()
@@ -794,14 +805,10 @@ def sync_workflows(STATE, ctx, rdb_compatible = False):
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data['workflows']:
             if rdb_compatible:
-                row = replace_na_with_none(row)
+                row = process_record(row, empty_object, schema)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= start:
-                try:
-                    singer.write_record("workflows", record, catalog.get('stream_alias'), time_extracted=time_extracted)
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("workflows", record, catalog.get('stream_alias'), time_extracted=time_extracted)
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
@@ -813,6 +820,7 @@ def sync_owners(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema("owners", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     bookmark_key = 'updatedAt'
 
     singer.write_schema("owners", schema, ["ownerId"], [bookmark_key], catalog.get('stream_alias'))
@@ -826,17 +834,13 @@ def sync_owners(STATE, ctx, rdb_compatible = False):
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data:
             if rdb_compatible:
-                row = replace_na_with_none(row)
+                row = process_record(row, empty_object, schema)
             record = bumble_bee.transform(row, schema, mdata)
             if record[bookmark_key] >= max_bk_value:
                 max_bk_value = record[bookmark_key]
 
             if record[bookmark_key] >= start:
-                try:
-                    singer.write_record("owners", record, catalog.get('stream_alias'), time_extracted=time_extracted)
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("owners", record, catalog.get('stream_alias'), time_extracted=time_extracted)
 
     STATE = singer.write_bookmark(STATE, 'owners', bookmark_key, max_bk_value)
     singer.write_state(STATE)
@@ -846,6 +850,7 @@ def sync_engagements(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema("engagements", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     bookmark_key = 'lastUpdated'
     singer.write_schema("engagements", schema, ["engagement_id"], [bookmark_key], catalog.get('stream_alias'))
     start = get_start(STATE, "engagements", bookmark_key)
@@ -854,7 +859,6 @@ def sync_engagements(STATE, ctx, rdb_compatible = False):
 
     STATE = singer.write_bookmark(STATE, 'engagements', bookmark_key, start)
     singer.write_state(STATE)
-
     url = get_url("engagements_all")
     params = {'limit': 250}
     top_level_key = "results"
@@ -865,41 +869,35 @@ def sync_engagements(STATE, ctx, rdb_compatible = False):
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for engagement in engagements:
             if rdb_compatible:
-                engagement = replace_na_with_none(engagement)
+                engagement = process_record(engagement, empty_object, schema)
             record = bumble_bee.transform(engagement, schema, mdata)
             if record['engagement'][bookmark_key] >= start:
                 # hoist PK and bookmark field to top-level record
                 record['engagement_id'] = record['engagement']['id']
                 record[bookmark_key] = record['engagement'][bookmark_key]
-                try:
-                    singer.write_record("engagements", record, catalog.get('stream_alias'), time_extracted=time_extracted)
-                except (BrokenPipeError, IOError):
-                    LOGGER.info("BrokenPipeError caught.")
-                    pass
+                singer.write_record("engagements", record, catalog.get('stream_alias'), time_extracted=time_extracted)
                 if record['engagement'][bookmark_key] >= max_bk_value:
                     max_bk_value = record['engagement'][bookmark_key]
 
     STATE = singer.write_bookmark(STATE, 'engagements', bookmark_key, max_bk_value)
     singer.write_state(STATE)
+
     return STATE
 
 def sync_deal_pipelines(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema('deal_pipelines', rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     singer.write_schema('deal_pipelines', schema, ['pipelineId'], catalog.get('stream_alias'))
     LOGGER.info('sync_deal_pipelines')
     data = request(get_url('deal_pipelines')).json()
     with Transformer(UNIX_MILLISECONDS_INTEGER_DATETIME_PARSING) as bumble_bee:
         for row in data:
             if rdb_compatible:
-                row = replace_na_with_none(row)
+                row = process_record(row, empty_object, schema)
             record = bumble_bee.transform(row, schema, mdata)
-            try:
-                singer.write_record("deal_pipelines", record, catalog.get('stream_alias'), time_extracted=utils.now())
-            except (BrokenPipeError, IOError):
-                LOGGER.info("BrokenPipeError caught.")
-                pass
+            singer.write_record("deal_pipelines", record, catalog.get('stream_alias'), time_extracted=utils.now())
     singer.write_state(STATE)
     return STATE
 
@@ -963,9 +961,8 @@ def do_sync(STATE, catalogs, rdb_compatible = False):
     for stream in selected_streams:
         LOGGER.info('Syncing %s', stream.tap_stream_id)
         STATE = singer.set_currently_syncing(STATE, stream.tap_stream_id)
-        singer.write_state(STATE)
-
-        try:
+        try: 
+            singer.write_state(STATE)
             STATE = make_rdb_compatible(stream, STATE, ctx, rdb_compatible)
             # stream.sync(STATE, ctx) # pylint: disable=not-callable
         except SourceUnavailableException as ex:
