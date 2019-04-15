@@ -160,8 +160,8 @@ def parse_args(required_config_keys):
 
     return args
 
-def replace_na_with_none(obj):
-    '''Given a certain object, the function will replace any 'N/A' values with None.
+def replace_na_and_hex_chars(obj):
+    '''Given a certain object, the function will replace any 'N/A' values with None and hexadecimal strings with '?'
     E.g: object = {
                     "key1" : [{"subkey1": "value1"}, {"subkey2": "N/A"}],
                     "key2" : "n/a",
@@ -170,7 +170,7 @@ def replace_na_with_none(obj):
                                 "subkey4" : "value2"
                         }
                     }
-        replace_na_with_none(object) will return:
+        replace_na_and_hex_chars(object) will return:
         {
             "key1" : [{"subkey1": "value1"}, {"subkey2": None}],
             "key2" : None,
@@ -183,18 +183,19 @@ def replace_na_with_none(obj):
     if isinstance(obj, dict):
         new_dict = {}
         for key, value in obj.items():
-            new_dict[key] = replace_na_with_none(value)
+            new_dict[key] = replace_na_and_hex_chars(value)
         return new_dict
 
     if isinstance(obj, list):
         new_list = []
         for value in obj:
-            new_list.append(replace_na_with_none(value))
+            new_list.append(replace_na_and_hex_chars(value))
         return new_list
 
     if isinstance(obj, str):
         if obj.lower() == 'n/a':
             obj = None
+        obj = re.sub(u'\x00', '?', obj)
     return obj
 
 def get_object_type(schema):
@@ -230,7 +231,7 @@ def get_empty_object_from_schema(schema):
         return ""
 
 def process_record(record, empty_object, schema):
-    record = replace_na_with_none(record)
+    record = replace_na_and_hex_chars(record)
     # The following list contains on the first position the  DEFAULT dictionary, which is obtained 
     # out of the json schema and the secon one is the current row
     # They  MUST be n this order or otherwise merging the dictionaries will not have the result we desire:
