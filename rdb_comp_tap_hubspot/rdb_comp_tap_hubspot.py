@@ -40,8 +40,8 @@ class StateFields:
     this_stream = 'this_stream'
 
 CHUNK_SIZES = {
-    "email_events": 1000 * 60 * 60 * 24,
-    "subscription_changes": 1000 * 60 * 60 * 24,
+    "email_events": 1000 * 60 * 60,
+    "subscription_changes": 1000 * 60 * 60,
 }
 
 BASE_URL = "https://api.hubapi.com"
@@ -193,9 +193,9 @@ def replace_na_and_hex_chars(obj):
         return new_list
 
     if isinstance(obj, str):
+        obj = re.sub(r"[\x00-\x1f,\x7f-\xff]", "?", obj)
         if obj.lower() == 'n/a':
             obj = None
-        obj = re.sub(u'\x00', '?', obj)
     return obj
 
 def get_object_type(schema):

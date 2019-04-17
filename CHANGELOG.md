@@ -8,3 +8,9 @@
 
 ## 1.0.1
   * Fix: replace hexadecimal strings with '?'.
+
+## 1.0.2
+  * Fix: replace hexadecimal strings with '?'.
+
+## 1.0.3
+  * Fix: replace hexadecimal only if string is not None.
