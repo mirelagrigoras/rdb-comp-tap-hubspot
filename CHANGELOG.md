@@ -14,3 +14,6 @@
 
 ## 1.0.3
   * Fix: replace hexadecimal only if string is not None.
+
+## 1.0.4
+  * Fix: sync_campaigns.

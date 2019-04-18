@@ -643,6 +643,7 @@ def sync_campaigns(STATE, ctx, rdb_compatible = False):
     catalog = ctx.get_catalog_from_id(singer.get_currently_syncing(STATE))
     mdata = metadata.to_map(catalog.get('metadata'))
     schema = load_schema("campaigns", rdb_compatible)
+    empty_object = get_empty_object_from_schema(schema)
     singer.write_schema("campaigns", schema, ["id"], catalog.get('stream_alias'))
     LOGGER.info("sync_campaigns(NO bookmarks)")
     url = get_url("campaigns_all")
